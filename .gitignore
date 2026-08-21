@@ -1,0 +1,31 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Local environment
+.venv/
+__pycache__/
+*.py[cod]
+.vendor/
+
+# Runtime state
+.wallet-monitor-history.json
+.wallet-monitor-settings.json
+.buzz-monitor-history.json
+.buzz-widget-settings.json
+.buzz-monitor-settings.json
+*.tmp
+
+# Build and editor output
+build/
+dist/
+release/
+*.egg-info/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local captures
+widget-preview*
