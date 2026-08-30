@@ -232,6 +232,7 @@ class WalletMonitorWidget(ctk.CTk):
         self.dock_x = 0
         self.dock_top = 0
         self.hwnd = 0
+        self.initial_position = (0, 0)
         self.window_width = self._target_window_width()
         self.data = {
             "balance": 0.0,
@@ -247,6 +248,7 @@ class WalletMonitorWidget(ctk.CTk):
         self._configure_window()
         self._build_layout()
         self._apply_acrylic()
+        self._set_native_position(*self.initial_position)
         self._bind_interactions()
         self.render()
         self.after(300, self.refresh)
@@ -281,6 +283,7 @@ class WalletMonitorWidget(ctk.CTk):
         self.overrideredirect(True)
         self.resizable(False, False)
         x, y, self.docked = self._load_position()
+        self.initial_position = (x, y)
         self.dock_x = x
         self.dock_top = y if self.docked else 0
         self.geometry(f"{self.window_width}x{WINDOW_HEIGHT}+{x}+{y}")
@@ -384,6 +387,45 @@ class WalletMonitorWidget(ctk.CTk):
         ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info))
         return info.work.left, info.work.top, info.work.right, info.work.bottom
 
+    @staticmethod
+    def _monitor_work_areas() -> list[tuple[int, int, int, int]]:
+        areas: list[tuple[int, int, int, int]] = []
+        enum_callback = ctypes.WINFUNCTYPE(
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(NativeRect),
+            ctypes.c_void_p,
+        )
+
+        def collect(monitor: int, _dc: int, _rect: Any, _data: int) -> int:
+            info = NativeMonitorInfo()
+            info.size = ctypes.sizeof(info)
+            if ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                areas.append((info.work.left, info.work.top, info.work.right, info.work.bottom))
+            return 1
+
+        callback = enum_callback(collect)
+        ctypes.windll.user32.EnumDisplayMonitors(None, None, callback, None)
+        return areas or [WalletMonitorWidget._monitor_work_area(0, 0)]
+
+    @staticmethod
+    def _position_is_visible(
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        work_areas: list[tuple[int, int, int, int]],
+    ) -> bool:
+        required_width = min(64, width)
+        required_height = min(32, height)
+        for left, top, right, bottom in work_areas:
+            visible_width = min(x + width, right) - max(x, left)
+            visible_height = min(y + height, bottom) - max(y, top)
+            if visible_width >= required_width and visible_height >= required_height:
+                return True
+        return False
+
     def _set_native_position(self, x: int, y: int) -> None:
         ctypes.windll.user32.SetWindowPos(
             self.hwnd or self._window_handle(),
@@ -450,15 +492,14 @@ class WalletMonitorWidget(ctk.CTk):
         self.bind("<Enter>", self.expand_dock, add="+")
         self.bind("<Leave>", self.schedule_collapse, add="+")
 
-    def _screen_bounds(self) -> tuple[int, int]:
-        width = round(self.window_width * self._get_window_scaling())
-        height = round(WINDOW_HEIGHT * self._get_window_scaling())
-        return max(0, self.winfo_screenwidth() - width), max(0, self.winfo_screenheight() - height)
-
     def _load_position(self) -> tuple[int, int, bool]:
-        max_x, max_y = self._screen_bounds()
-        default_x = max(20, max_x - 40)
-        default_y = max(20, max_y - 80)
+        scaling = max(1.0, float(self._get_window_scaling()))
+        width = round(self.window_width * scaling)
+        height = round(WINDOW_HEIGHT * scaling)
+        work_areas = self._monitor_work_areas()
+        primary_left, primary_top, primary_right, primary_bottom = self._monitor_work_area(0, 0)
+        default_x = max(primary_left, primary_right - width - 40)
+        default_y = max(primary_top, primary_bottom - height - 80)
         for path in (SETTINGS_PATH, LEGACY_SETTINGS_PATH):
             try:
                 value = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -466,7 +507,9 @@ class WalletMonitorWidget(ctk.CTk):
                 y = int(float(value.get("y", value.get("top", default_y))))
                 docked = bool(value.get("docked", False))
                 dock_top = int(float(value.get("dock_top", y if docked else 0)))
-                return x, dock_top if docked else y, docked
+                candidate_y = dock_top if docked else y
+                if self._position_is_visible(x, candidate_y, width, height, work_areas):
+                    return x, candidate_y, docked
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 continue
         return default_x, default_y, False
